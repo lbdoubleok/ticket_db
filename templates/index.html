@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Concert Tickets</title>
+</head>
+<body>
+    <h1>🎤 รายการคอนเสิร์ต</h1>
+    {% for concert in concerts %}
+        <div style="border:1px solid #ccc; padding:10px; margin:10px;">
+            <h3>{{ concert.name }}</h3>
+            <p>ที่นั่งเหลือ: {{ concert.available_seats }} / {{ concert.total_seats }}</p>
+        </div>
+    {% endfor %}
+</body>
+</html>
