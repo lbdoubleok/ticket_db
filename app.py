@@ -28,38 +28,47 @@ def index():
     return render_template("index.html", concerts=concerts)
 
 @app.route("/book/<int:concert_id>")
-def book_naive(concert_id):
+def book_safe(concert_id):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
-    # Step 1: อ่านจำนวนที่นั่งเหลือ
-    cursor.execute("SELECT available_seats FROM concerts WHERE id = %s", (concert_id,))
-    concert = cursor.fetchone()
-    available = concert["available_seats"]
+    try:
+        # เริ่ม Transaction
+        conn.start_transaction()
 
-    # หน่วงเวลาเล็กน้อย เพื่อ "ขยาย" ช่วงเวลาที่ race condition จะเกิด
-    # (ในระบบจริง การหน่วงนี้เกิดเองจาก network/processing time)
-    time.sleep(0.5)
-
-    # Step 2: เช็คว่าที่นั่งพอไหม
-    if available > 0:
-        # Step 3: บันทึกการจอง
+        # SELECT ... FOR UPDATE: ล็อกแถวนี้ไว้ คนอื่นต้องรอ
         cursor.execute(
-            "INSERT INTO bookings (concert_id, user_name, seats) VALUES (%s, %s, %s)",
-            (concert_id, "guest", 1)
-        )
-        # Step 4: ลดจำนวนที่นั่งเหลือ
-        cursor.execute(
-            "UPDATE concerts SET available_seats = available_seats - 1 WHERE id = %s",
+            "SELECT available_seats FROM concerts WHERE id = %s FOR UPDATE",
             (concert_id,)
         )
-        conn.commit()
-        result = "✅ จองสำเร็จ!"
-    else:
-        result = "❌ ที่นั่งเต็มแล้ว"
+        concert = cursor.fetchone()
+        available = concert["available_seats"]
 
-    cursor.close()
-    conn.close()
+        time.sleep(0.5)  # หน่วงเวลาเหมือนเดิม เพื่อทดสอบว่า lock ทำงานจริง
+
+        if available > 0:
+            cursor.execute(
+                "INSERT INTO bookings (concert_id, user_name, seats) VALUES (%s, %s, %s)",
+                (concert_id, "guest", 1)
+            )
+            cursor.execute(
+                "UPDATE concerts SET available_seats = available_seats - 1 WHERE id = %s",
+                (concert_id,)
+            )
+            conn.commit()  # ยืนยัน transaction — ปลดล็อก
+            result = "✅ จองสำเร็จ!"
+        else:
+            conn.rollback()  # ยกเลิก transaction — ปลดล็อก
+            result = "❌ ที่นั่งเต็มแล้ว"
+
+    except Exception as e:
+        conn.rollback()
+        result = f"⚠️ เกิดข้อผิดพลาด: {e}"
+
+    finally:
+        cursor.close()
+        conn.close()
+
     return result
 
 if __name__ == "__main__":
