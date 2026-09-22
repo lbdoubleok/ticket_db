@@ -3,8 +3,14 @@ import mysql.connector
 import os
 from dotenv import load_dotenv
 import time
+import logging
+import threading
 
 load_dotenv()  # โหลดค่าจากไฟล์ .env
+
+MAX_CONCURRENT_USERS = 5  # ยอมให้เข้าไปจองพร้อมกันได้สูงสุด 5 คน
+current_users_in_room = 0
+room_lock = threading.Lock()
 
 app = Flask(__name__)
 
@@ -29,14 +35,20 @@ def index():
 
 @app.route("/book/<int:concert_id>")
 def book_safe(concert_id):
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    global current_users_in_room
+
+    # เช็คว่าห้องรอเต็มไหม
+    with room_lock:
+        if current_users_in_room >= MAX_CONCURRENT_USERS:
+            logging.info("User sent to waiting room (room full)")
+            return "⏳ ระบบมีคนใช้งานหนาแน่น กรุณารอสักครู่แล้วลองใหม่"
+        current_users_in_room += 1
 
     try:
-        # เริ่ม Transaction
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
         conn.start_transaction()
 
-        # SELECT ... FOR UPDATE: ล็อกแถวนี้ไว้ คนอื่นต้องรอ
         cursor.execute(
             "SELECT available_seats FROM concerts WHERE id = %s FOR UPDATE",
             (concert_id,)
@@ -44,7 +56,7 @@ def book_safe(concert_id):
         concert = cursor.fetchone()
         available = concert["available_seats"]
 
-        time.sleep(0.5)  # หน่วงเวลาเหมือนเดิม เพื่อทดสอบว่า lock ทำงานจริง
+        time.sleep(150)
 
         if available > 0:
             cursor.execute(
@@ -55,10 +67,12 @@ def book_safe(concert_id):
                 "UPDATE concerts SET available_seats = available_seats - 1 WHERE id = %s",
                 (concert_id,)
             )
-            conn.commit()  # ยืนยัน transaction — ปลดล็อก
+            conn.commit()
+            logging.info(f"Booking SUCCESS: concert_id={concert_id}")
             result = "✅ จองสำเร็จ!"
         else:
-            conn.rollback()  # ยกเลิก transaction — ปลดล็อก
+            conn.rollback()
+            logging.warning(f"Booking REJECTED (sold out): concert_id={concert_id}")
             result = "❌ ที่นั่งเต็มแล้ว"
 
     except Exception as e:
@@ -68,8 +82,16 @@ def book_safe(concert_id):
     finally:
         cursor.close()
         conn.close()
+        # ออกจากห้องรอ ไม่ว่าผลจะเป็นยังไง
+        with room_lock:
+            current_users_in_room -= 1
 
     return result
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
 if __name__ == "__main__":
     app.run(debug=True)
